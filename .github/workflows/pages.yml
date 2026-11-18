@@ -1,0 +1,40 @@
+name: Verify and publish
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test && npm run build
+      - run: python3 tests/helper_test.py && python3 scripts/package-helper.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-helper
+          path: .internal/Network-Status-Helper-macOS.zip
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .internal/dist
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

@@ -1,0 +1,17 @@
+#!/bin/zsh
+# Finder-launched installer. No administrator privileges, network download or autostart.
+set -eu
+RESOURCE="$(cd -- "$(dirname -- "$0")/../Resources" && pwd)"
+/usr/bin/osascript -e 'display dialog "安装网络状态台的本地只读助手？\n\n将在你的 ~/Applications 创建 Network Status Helper.app，并注册 netstatus:// 唤起协议。需要 Python 3.9+；不修改 Clash、DNS、防火墙或开机启动项。\n\n安装后，网页仍需每次会话经你授权才能读取网络状态。已有版本会备份。" with title "网络状态台 · 首次安装" buttons {"取消", "安装"} default button "取消" cancel button "取消"' >/dev/null || exit 0
+PY=""
+for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /Library/Frameworks/Python.framework/Versions/Current/bin/python3 /usr/bin/python3; do
+  if [[ -x "$candidate" ]] && "$candidate" -c 'import sys; assert sys.version_info >= (3,9)' >/dev/null 2>&1; then PY="$candidate"; break; fi
+done
+if [[ -z "$PY" ]]; then
+  /usr/bin/osascript -e 'display dialog "未发现 Python 3.9+。请先通过 python.org 官方安装器安装 Python，再打开本安装器。没有自动下载任何内容。" with title "需要 Python 3" buttons {"好"} default button "好"'
+  exit 1
+fi
+if ! "$PY" "$RESOURCE/install_helper.py"; then
+  /usr/bin/osascript -e 'display dialog "安装未完成。请确认 Python 和 macOS osacompile/codesign 可用。未修改网络设置。" with title "网络状态台" buttons {"好"} default button "好"'
+  exit 1
+fi
