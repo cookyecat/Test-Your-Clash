@@ -49,3 +49,31 @@ export function batchSelect(current, candidates, mode = "add", limit = 500) {
   if (next.size > limit) throw new RangeError("selection_limit");
   return next;
 }
+
+// Support current nested helper samples and older flat samples without inventing successes.
+export function normalizeSamples(samples, metric) {
+  return samples.map(s => {
+    const result = s[metric] || (s.state ? s : {state:'skipped'});
+    const at = result.at ?? s.at;
+    return {...result, at: typeof at === 'number' ? at : Date.parse(at)};
+  }).sort((a,b) => a.at-b.at);
+}
+export function probeStats(row) {
+  const samples = row?.samples || [], window = samples.slice(-20), recent = summarize(window);
+  const base = summarize(samples), total = row?.summary, counts = row?.totals;
+  const ok = total?.ok ?? counts?.ok ?? base.ok;
+  const fail = total?.failed ?? counts?.fail ?? base.fail;
+  const error = total?.errors ?? counts?.error ?? base.error;
+  const skipped = total?.skipped ?? counts?.skipped ?? base.skipped;
+  const tested = ok + fail, last = samples.at(-1);
+  let streak = 0;
+  for (let i=samples.length-1;i>=0 && samples[i].state==='fail';i--) streak++;
+  const lat = samples.filter(s=>s.state==='ok' && Number.isFinite(s.ms)).map(s=>s.ms);
+  return {...base,ok,fail,error,skipped,tested,rate:tested ? ok/tested*100:null,
+    loss:tested ? fail/tested*100:null, recentLoss:recent.tested ? recent.fail/recent.tested*100:null,
+    recentTested:recent.tested, streak:total?.current_failure_streak ?? streak,
+    lastState:total?.last_state ?? last?.state,
+    lastAt:total?.last_sample_at ? Date.parse(total.last_sample_at) : last?.at,
+    lastMs:total ? total.last_ms : last?.state==='ok' ? last.ms:null,
+    mean:total?.avg_ms ?? (lat.length ? lat.reduce((a,b)=>a+b,0)/lat.length:null)};
+}

@@ -51,3 +51,11 @@ The Network map begins with a clickable DNS configuration graph: system resolver
 For hundreds of nodes, choose a group (or All nodes) and click **Select all matches (N)**. Selection includes offscreen rows, honors both search and issue filters, and accumulates across groups with duplicate nodes removed. **Select entire scope**, **Invert matches**, and the table-header checkbox share these rules. Sessions are limited to 500 nodes; larger selections are rejected without silently truncating. Use **Select first 500** explicitly when needed. Probe concurrency stays bounded, and UI/storage updates are coalesced for large batches.
 
 Run `node tests/mock-controller.mjs --large` for a synthetic 300-node controller. `tests/fixtures/dns-snapshot.json` is a small synthetic DNS fixture for the import UI. Neither fixture contains user configuration or contacts real DNS/proxy servers.
+
+## Live loss monitoring
+
+In the Mac helper connection, choose **入口 ICMP / Ping** for packet loss to node ingress endpoints (default: 1-second interval, 1-second timeout, 32 concurrent probes). This uses the physical interface; a server that blocks ICMP may still proxy HTTPS successfully. Direct-controller mode and quick tests use **代理 HTTPS**, whose percentage is request failure, not ICMP packet loss. Large batches may miss sampling slots when timeout/concurrency limits prevent keeping up.
+
+The live table shows cumulative failure percentage, the last 20 observations' failure percentage, valid/success/failure counts, collection errors and gaps, last/mean latency, current failure streak and last sample time. Both percentage denominators exclude errors and gaps. The page polls the helper every second without overlapping requests and continues updating while searching. Actual probe frequency is separate from UI refresh. Summary CSV exports include these counters; JSON and sample CSV retain the available observations.
+
+For deterministic UI acceptance with 156 simulated nodes (no real probes), run `npm run build`, then `node tests/mock-helper.mjs`, and open `http://127.0.0.1:4175/#token=fixture` in a test tab. Never interpret this fixture's generated results as actual network measurements.

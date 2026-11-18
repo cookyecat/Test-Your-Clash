@@ -1,4 +1,4 @@
-import { targets, escape as e, summarize, classify, leaves, nextDue, csv, filterNodeNames, batchSelect } from "./model.js";
+import { targets, escape as e, summarize, classify, leaves, nextDue, csv, filterNodeNames, batchSelect, probeStats, normalizeSamples } from "./model.js";
 import { dnsTopology } from "./dns-view.js";
 import { history, save } from "./store.js";
 let lang = localStorage.getItem("net-lang") || (navigator.language.startsWith("zh") ? "zh" : "en");
@@ -7,7 +7,8 @@ let releaseLock = null;
 let resultTimer = null, persistTimer = null;
 const pendingSaves = /* @__PURE__ */ new Map();
 let routeIndex = 0, historySearch = "", historyKind = "all";
-const draft = { target: "cloudflare", duration: 1800, interval: 15, timeout: 5e3, workers: 4 };
+let helperPolling = false, syncedAt = null, pollError = "";
+const draft = { mode: "https", target: "cloudflare", duration: 1800, interval: 15, timeout: 5e3, workers: 4 };
 const fingerprint = (p, c) => JSON.stringify({ mode: c.mode, tun: c.tun, port: c["mixed-port"], nodes: Object.entries(p).map(([n, v]) => [n, v.type, v.now, v.all]).sort() });
 let page = "monitor", tab = "continuous", conn = null, proxies = {}, config = {}, connections = [], snapshot = null, selected = /* @__PURE__ */ new Set(), scope = "", search = "", sort = "name", filter = "all", run = null, records = [], error = "", detailName = "", timer = null, inflight = /* @__PURE__ */ new Map(), busy = false, helperHistory = [];
 const stateText = (s) => ({ ok: t("响应", "Responding"), fail: t("探测失败", "Probe failed"), error: t("采集错误", "Collection error"), skipped: t("缺测", "Gap"), running: t("监测中", "Running"), paused: t("已暂停", "Paused"), done: t("已完成", "Completed"), cancelled: t("已停止", "Stopped"), interrupted: t("已中断", "Interrupted") })[s] || t("待测", "Pending");
@@ -22,14 +23,12 @@ function samples(name) {
   return run?.rows.find((r) => r.name === name)?.samples || [];
 }
 function stats(name) {
-  const row = run?.rows.find((r) => r.name === name);
-  if (row?.summary) {
-    const a = row.summary;
-    return { ok: a.ok, fail: a.failed, error: a.errors, tested: a.tested, rate: a.tested ? 100 * a.ok / a.tested : null, p50: a.p50_ms, p95: a.p95_ms, max: a.max_failure_streak };
-  }
-  const s = summarize(samples(name));
-  return row?.totals ? { ...s, ...row.totals, rate: row.totals.tested ? 100 * row.totals.ok / row.totals.tested : null } : s;
+  return probeStats(run?.rows.find((r) => r.name === name));
 }
+function probeMode() { return run?.options.mode || draft.mode; }
+function lossLabel() { return probeMode() === "icmp" ? t("ICMP 丢包率", "ICMP loss") : t("HTTPS 失败率", "HTTPS failure"); }
+const pct = n => Number.isFinite(n) ? n.toFixed(1) + "%" : "—";
+
 function trend(ss) {
   const a = ss.slice(-24);
   return `<div class="trend" aria-label="${t("近期探测时间条", "Recent probe history")}">${(a.length ? a : Array(24).fill({ state: "pending" })).map((s) => `<span class="tick ${e(s.state)}" title="${e(time(s.at) + " · " + stateText(s.state) + " " + ms(s.ms))}"></span>`).join("")}</div>`;
@@ -40,7 +39,7 @@ function options(items, value) {
 function render() {
   const tableScroll = document.querySelector(".table-wrap:has(.nodes)")?.scrollTop || 0;
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-  $("app").innerHTML = `<div class="shell"><aside><div class="brand">◈ ${t("网络状态台", "Observatory")}<b>NETWORK OBSERVATORY</b></div><button class="nav ${page === "topology" ? "active" : ""}" data-page="topology">⌘ ${t("网络拓扑", "Network map")}</button><button class="nav ${page === "monitor" ? "active" : ""}" data-page="monitor">▥ ${t("节点稳定性", "Node stability")}</button><div class="aside-note">${t("数据留在你的设备上", "Your data stays on your device")}<br>LOCAL FIRST · V5.0.2</div></aside><main><header><span>${t("本机网络 / 工作台", "LOCAL NETWORK / WORKSPACE")}</span><div><span class="badge">${conn ? e(conn.kind === "helper" ? t("本机助手", "Local helper") : t("控制器直连", "Direct controller")) : t("尚未连接", "Not connected")}</span><button id="language">${lang === "zh" ? "EN" : "中文"}</button><button id="connectButton">${conn ? t("连接管理", "Connection") : t("连接本机", "Connect")}</button></div></header><div class="page"><div class="heading"><div><div class="eyebrow">${page === "monitor" ? "OBSERVE • COMPARE • UNDERSTAND" : "FOLLOW THE CONNECTION"}</div><h1>${page === "monitor" ? t("让稳定性，看得见。", "Stability, in plain sight.") : t("每一条连接，都有来路。", "Every connection has a path.")}</h1><p>${page === "monitor" ? t("观察真实代理请求，找到失败发生的时刻。", "Observe real proxy requests. See exactly when they fail.") : t("连接记录与配置路径，分开呈现。", "Observed connections and configured routes, clearly distinguished.")}</p></div>${conn ? `<button id="refresh">↻ ${t("刷新", "Refresh")}</button>` : ""}</div>${error ? `<div class="notice" role="alert">${e(error)}</div>` : ""}${page === "monitor" ? monitor() : topology()}<footer><span>NETWORK OBSERVATORY · 5.0.2</span><span>${t("本地数据 · 无遥测", "Local data · No telemetry")}</span></footer></div></main></div>`;
+  $("app").innerHTML = `<div class="shell"><aside><div class="brand">◈ ${t("网络状态台", "Observatory")}<b>NETWORK OBSERVATORY</b></div><button class="nav ${page === "topology" ? "active" : ""}" data-page="topology">⌘ ${t("网络拓扑", "Network map")}</button><button class="nav ${page === "monitor" ? "active" : ""}" data-page="monitor">▥ ${t("节点稳定性", "Node stability")}</button><div class="aside-note">${t("数据留在你的设备上", "Your data stays on your device")}<br>LOCAL FIRST · V5.1.0</div></aside><main><header><span>${t("本机网络 / 工作台", "LOCAL NETWORK / WORKSPACE")}</span><div><span class="badge">${conn ? e(conn.kind === "helper" ? t("本机助手", "Local helper") : t("控制器直连", "Direct controller")) : t("尚未连接", "Not connected")}</span><button id="language">${lang === "zh" ? "EN" : "中文"}</button><button id="connectButton">${conn ? t("连接管理", "Connection") : t("连接本机", "Connect")}</button></div></header><div class="page"><div class="heading"><div><div class="eyebrow">${page === "monitor" ? "OBSERVE • COMPARE • UNDERSTAND" : "FOLLOW THE CONNECTION"}</div><h1>${page === "monitor" ? t("让稳定性，看得见。", "Stability, in plain sight.") : t("每一条连接，都有来路。", "Every connection has a path.")}</h1><p>${page === "monitor" ? t("观察真实代理请求，找到失败发生的时刻。", "Observe real proxy requests. See exactly when they fail.") : t("连接记录与配置路径，分开呈现。", "Observed connections and configured routes, clearly distinguished.")}</p></div>${conn ? `<button id="refresh">↻ ${t("刷新", "Refresh")}</button>` : ""}</div>${error ? `<div class="notice" role="alert">${e(error)}</div>` : ""}${page === "monitor" ? monitor() : topology()}<footer><span>NETWORK OBSERVATORY · 5.1.0</span><span>${t("本地数据 · 无遥测", "Local data · No telemetry")}</span></footer></div></main></div>`;
   wire();
   const table = document.querySelector(".table-wrap:has(.nodes)");
   if (table) table.scrollTop = tableScroll;
@@ -64,13 +63,13 @@ function changeSelection(names, mode = "add") {
   }
 }
 function workspace() {
-  const names = selectableNames(), shown = filteredNames().sort((a, b) => sort === "failure" ? (stats(b).fail || 0) - (stats(a).fail || 0) || a.localeCompare(b) : a.localeCompare(b));
-  const all = names.map(stats), tested = all.reduce((n, s) => n + s.tested, 0), failed = all.filter((s) => s.fail > 0).length;
+  const names = selectableNames(), shown = filteredNames().sort((a, b) => sort === "failure" ? (stats(b).loss ?? -1) - (stats(a).loss ?? -1) || a.localeCompare(b) : a.localeCompare(b));
+  const all = names.map(stats), tested = all.reduce((n, s) => n + s.tested, 0);
   const visibleSelected = shown.filter((n) => selected.has(n)).length;
-  return `${run ? `<div class="metrics">${[[stateText(run.state), t("任务状态", "Session status"), run.executor === "helper" ? t("助手执行 · 关闭网页后继续", "Helper · continues after closing") : t("浏览器执行 · 离开前台暂停", "Browser · pauses in background")], [Math.floor(((run.finished || Date.now()) - run.started) / 6e4) + " min", t("观察时间", "Elapsed"), time(run.started)], [tested, t("有效样本", "Valid samples"), t("仅成功和探测失败", "Success + probe failure only")], [failed + "/" + names.length, t("发生失败的节点", "Nodes with failures"), t("不包含采集错误", "Excludes collection errors")]].map(([v, l, d]) => `<div class="metric"><small>${l}</small><strong>${e(v)}</strong><p>${e(d)}</p></div>`).join("")}</div>` : ""}<section class="panel"><div class="toolbar">${!active() ? `<label class="field">${t("节点范围", "Scope")}<select id="scope" aria-label="${t("节点范围", "Scope")}">${options([["", t("全部节点", "All nodes")], ...Object.entries(proxies).filter(([, p]) => p.all).map(([n]) => [n, n])], scope)}</select></label><label class="field">${t("测试目标", "Target")}<select id="target">${options(Object.keys(targets).map((n) => [n, n]), draft.target)}</select></label><label class="field">${t("观察时长", "Duration")}<select id="duration">${options([[1800, t("30 分钟", "30 minutes")], [7200, t("2 小时", "2 hours")], [28800, t("8 小时", "8 hours")], [0, t("直到停止", "Until stopped")]], draft.duration)}</select></label>` : `<div><b>${e(run.options.target)} · ${e(run.options.interval)} s</b><p>${t("运行参数已固定", "Session settings are fixed")} · ${run.rows.length} ${t("节点", "nodes")}</p></div>`}<div class="actions">${active() ? `<button id="pause" ${run.executor === "helper" ? "hidden" : ""}>${run.state === "paused" ? t("继续", "Resume") : t("暂停", "Pause")}</button><button id="stop">■ ${t("停止", "Stop")}</button>` : `${run ? `<button id="new">${t("新建监测", "New session")}</button><button id="retry">${t("复测异常", "Retry failures")}</button>` : ""}<button class="primary" id="start" ${!conn || !selected.size || selected.size > 500 ? "disabled" : ""}>▶ ${tab === "quick" ? t("开始 3 轮测试", "Start 3 rounds") : t("开始监测", "Start monitoring")} · ${selected.size} ${t("个节点", "nodes")}</button>`}<button id="export" ${!run ? "disabled" : ""}>${t("导出", "Export")}</button></div></div>${!active() ? `<details><summary>${t("高级设置", "Advanced settings")}</summary><div class="advanced"><label class="field">${t("每节点间隔", "Interval per node")}<select id="interval">${options([15, 30, 60, 300].map((n) => [n, n + " s"]), draft.interval)}</select></label><label class="field">${t("超时", "Timeout")}<select id="timeout">${options([3e3, 5e3, 8e3].map((n) => [n, n / 1e3 + " s"]), draft.timeout)}</select></label><label class="field">${t("并发", "Concurrency")}<select id="workers">${options([2, 4, 8].map((n) => [n, n]), draft.workers)}</select></label></div><p>${t("HTTPS 由指定节点访问目标；不会切换当前出口。浏览器页面暂停期间不计为失败。", "HTTPS probes use the specified node without switching your current route. Pauses are not counted as failures.")}</p></details>` : ""}<div class="list-tools"><input id="search" placeholder="${t("搜索节点…", "Search nodes…")}" value="${e(search)}" aria-label="${t("搜索节点", "Search nodes")}"><select id="resultFilter" aria-label="${t("结果筛选", "Result filter")}">${options([["all", t("全部结果", "All results")], ["issues", t("仅异常", "Issues only")]], filter)}</select><select id="sort" aria-label="${t("排序", "Sort")}">${options([["name", t("按名称", "By name")], ["failure", t("失败优先", "Failures first")]], sort)}</select></div><p class="probe-consent">${t("点击开始即确认通过所选节点向测试目标发送探测请求，可随时停止。", "Click Start to confirm probe requests through the selected nodes to the test target. You can stop at any time.")}</p><div class="bulk-selection"><div><strong>${t("已选", "Selected")} ${selected.size} / 500</strong><span>${t("当前筛选", "Matching")} ${shown.length} · ${t("筛选外已选", "Selected outside filter")} ${selected.size - visibleSelected}</span></div><div class="bulk-buttons"><button class="primary" id="selectAll" ${active() ? "disabled" : ""}>${t("全选筛选结果", "Select all matches")} (${shown.length})</button>${shown.length > 500 ? `<button id="selectFirst" ${active() ? "disabled" : ""}>${t("选取前 500 个", "Select first 500")}</button>` : ""}<button id="selectScope" ${active() ? "disabled" : ""}>${t("全选当前范围", "Select entire scope")} (${names.length})</button><button id="invert" ${active() ? "disabled" : ""}>${t("反选筛选结果", "Invert matches")}</button><button id="clear" ${active() ? "disabled" : ""}>${t("清空全部", "Clear all")}</button></div><p>${active() ? t("运行中不能更改节点；停止后可重新选择。", "Selection is locked while running. Stop to change nodes.") : t("先选策略组或搜索，再点全选。切换策略组会保留已选节点，可累加多个组；不受滚动位置限制。", "Choose a group or search, then select all. Selections accumulate across groups and include off-screen rows.")}</p>${selected.size > 20 ? `<p>${t("大批量探测使用有界并发；超时较多时实际采样间隔会延长，缺测不计为失败。", "Large batches use bounded concurrency. Timeouts can lengthen actual sampling intervals; gaps are not failures.")}</p>` : ""}</div><div class="table-wrap"><table class="nodes"><thead><tr><th><input id="selectMatches" type="checkbox" aria-label="${t("全选或取消当前筛选", "Select or deselect matching nodes")}" ${shown.length && visibleSelected === shown.length ? "checked" : ""} ${active() || !shown.length ? "disabled" : ""}></th><th>${t("节点", "Node")}</th><th>${t("HTTPS 成功率", "HTTPS success")}</th><th>P50 / P95</th><th>${t("近期采样", "Recent samples")}</th><th>${t("状态", "Status")}</th></tr></thead><tbody>${shown.map((n) => {
+  return `${run ? `<div class="metrics">${[[stateText(run.state), t("任务状态", "Session status"), run.executor === "helper" ? t("助手执行 · 关闭网页后继续", "Helper · continues after closing") : t("浏览器执行 · 离开前台暂停", "Browser · pauses in background")], [Math.floor(((run.finished || Date.now()) - run.started) / 6e4) + " min", t("观察时间", "Elapsed"), time(run.started)], [tested, t("有效样本", "Valid samples"), t("仅成功和探测失败", "Success + probe failure only")], [pct(tested ? all.reduce((n, s) => n + s.fail, 0) / tested * 100 : null), lossLabel(), t("不包含采集错误", "Excludes collection errors")]].map(([v, l, d]) => `<div class="metric"><small>${l}</small><strong>${e(v)}</strong><p>${e(d)}</p></div>`).join("")}</div>` : ""}<section class="panel monitor-panel"><div class="live-status" role="status">${pollError ? e(t("更新失败，保留上次数据：", "Update failed; showing previous data: ") + pollError) : run ? `${active() ? "● " : ""}${stateText(run.state)} · ${t("数据更新", "Updated")} ${syncedAt ? time(syncedAt) : "—"} · ${t("页面每秒检查新结果；采样频率见设置", "Checks for results every second; sampling interval is shown below")}` : t("选择节点 → 选择测试方式 → 开始。结果会自动刷新。", "Select nodes → choose probe type → start. Results update automatically.")}</div><div class="toolbar">${!active() ? `<label class="field">${t("节点范围", "Scope")}<select id="scope" aria-label="${t("节点范围", "Scope")}">${options([["", t("全部节点", "All nodes")], ...Object.entries(proxies).filter(([, p]) => p.all).map(([n]) => [n, n])], scope)}</select></label><label class="field">${t("测试方式", "Probe type")}<select id="mode">${options([["https",t("代理 HTTPS", "Proxy HTTPS")], ...(conn?.kind === "helper" && tab !== "quick" ? [["icmp",t("入口 ICMP / Ping", "Ingress ICMP / Ping")]] : [])], draft.mode)}</select></label><label class="field">${t("HTTPS 目标", "HTTPS target")}<select id="target" ${draft.mode === "icmp" ? "disabled" : ""}>${options(Object.keys(targets).map((n) => [n, n]), draft.target)}</select></label><label class="field">${t("观察时长", "Duration")}<select id="duration">${options([[1800, t("30 分钟", "30 minutes")], [7200, t("2 小时", "2 hours")], [28800, t("8 小时", "8 hours")], [0, t("直到停止", "Until stopped")]], draft.duration)}</select></label>` : `<div><b>${e(run.options.mode === "icmp" ? "ICMP / Ping" : run.options.target)} · ${e(run.options.interval)} s</b><p>${t("运行参数已固定", "Session settings are fixed")} · ${run.rows.length} ${t("节点", "nodes")}</p></div>`}<div class="actions">${active() ? `<button id="pause" ${run.executor === "helper" ? "hidden" : ""}>${run.state === "paused" ? t("继续", "Resume") : t("暂停", "Pause")}</button><button id="stop">■ ${t("停止", "Stop")}</button>` : `${run ? `<button id="new">${t("新建监测", "New session")}</button><button id="retry">${t("复测异常", "Retry failures")}</button>` : ""}<button class="primary" id="start" ${!conn || !selected.size || selected.size > 500 ? "disabled" : ""}>▶ ${tab === "quick" ? t("开始 3 轮测试", "Start 3 rounds") : t("开始监测", "Start monitoring")} · ${selected.size} ${t("个节点", "nodes")}</button>`}<button id="export" ${!run ? "disabled" : ""}>${t("导出", "Export")}</button></div></div>${!active() ? `<details open><summary>${t("采样设置", "Sampling settings")}</summary><div class="advanced"><label class="field">${t("每节点间隔", "Interval per node")}<select id="interval">${options((draft.mode === "icmp" ? [1,2,5,10,15,30,60,300] : [15,30,60,300]).map((n) => [n, n + " s"]), draft.interval)}</select></label><label class="field">${t("超时", "Timeout")}<select id="timeout">${options((draft.mode === "icmp" ? [1000,2000,3000,5000,8000] : [3000,5000,8000]).map((n) => [n, n / 1e3 + " s"]), draft.timeout)}</select></label><label class="field">${t("并发", "Concurrency")}<select id="workers">${options((draft.mode === "icmp" ? [2,4,8,16,32,64,128] : [2,4,8]).map((n) => [n, n]), draft.workers)}</select></label></div><p>${t("ICMP 从物理网卡探测节点入口，不经过代理；禁 Ping 不等于代理不可用。HTTPS 测代理请求失败率。采集错误和缺测不计入丢包。", "ICMP probes the node ingress over the physical interface, not through the proxy. Blocked ping does not mean a broken proxy. HTTPS measures request failures. Errors and gaps are excluded.")}</p></details>` : ""}<div class="list-tools"><input id="search" placeholder="${t("搜索节点…", "Search nodes…")}" value="${e(search)}" aria-label="${t("搜索节点", "Search nodes")}"><select id="resultFilter" aria-label="${t("结果筛选", "Result filter")}">${options([["all", t("全部结果", "All results")], ["issues", t("仅异常", "Issues only")]], filter)}</select><select id="sort" aria-label="${t("排序", "Sort")}">${options([["name", t("按名称", "By name")], ["failure", t("失败优先", "Failures first")]], sort)}</select></div><p class="probe-consent">${t("点击开始即确认按所选方式发送探测请求，可随时停止。", "Click Start to confirm requests using the selected probe type. You can stop at any time.")}</p><div class="bulk-selection ${active() ? "running-selection" : ""}"><div><strong>${t("已选", "Selected")} ${selected.size} / 500</strong><span>${t("当前筛选", "Matching")} ${shown.length} · ${t("筛选外已选", "Selected outside filter")} ${selected.size - visibleSelected}</span></div><div class="bulk-buttons"><button class="primary" id="selectAll" ${active() ? "disabled" : ""}>${t("全选筛选结果", "Select all matches")} (${shown.length})</button>${shown.length > 500 ? `<button id="selectFirst" ${active() ? "disabled" : ""}>${t("选取前 500 个", "Select first 500")}</button>` : ""}<button id="selectScope" ${active() ? "disabled" : ""}>${t("全选当前范围", "Select entire scope")} (${names.length})</button><button id="invert" ${active() ? "disabled" : ""}>${t("反选筛选结果", "Invert matches")}</button><button id="clear" ${active() ? "disabled" : ""}>${t("清空全部", "Clear all")}</button></div><p>${active() ? t("运行中不能更改节点；停止后可重新选择。", "Selection is locked while running. Stop to change nodes.") : t("先选策略组或搜索，再点全选。切换策略组会保留已选节点，可累加多个组；不受滚动位置限制。", "Choose a group or search, then select all. Selections accumulate across groups and include off-screen rows.")}</p>${selected.size > 20 ? `<p>${t("大批量探测使用有界并发；超时较多时实际采样间隔会延长，缺测不计为失败。", "Large batches use bounded concurrency. Timeouts can lengthen actual sampling intervals; gaps are not failures.")}</p>` : ""}</div><div class="table-wrap"><table class="nodes"><thead><tr><th><input id="selectMatches" type="checkbox" aria-label="${t("全选或取消当前筛选", "Select or deselect matching nodes")}" ${shown.length && visibleSelected === shown.length ? "checked" : ""} ${active() || !shown.length ? "disabled" : ""}></th><th>${t("节点", "Node")}</th><th>${lossLabel()}</th><th>${t("近 20 次失败率", "Last 20 failure %")}</th><th>${t("有效 / 成功 / 失败", "Valid / OK / Failed")}</th><th>${t("最新 / 平均延迟", "Last / Mean")}</th><th>${t("连续失败", "Failure streak")}</th><th>${t("近期采样", "Recent samples")}</th><th>${t("状态 / 最后采样", "Status / Last sample")}</th></tr></thead><tbody>${shown.map((n) => {
     const s = stats(n), ss = samples(n);
-    return `<tr><td><input type="checkbox" data-select="${e(n)}" ${selected.has(n) ? "checked" : ""} aria-label="${e(n)}" ${active() ? "disabled" : ""}></td><td><button class="node-name" data-detail="${e(n)}">${e(n)}</button><div class="node-type">${e(proxies[n]?.type || "HTTPS")}</div></td><td data-label="${t("成功率", "Success")}"><b class="${s.fail ? "bad" : "good"}">${s.rate === null ? "—" : s.rate.toFixed(1) + "%"}</b><div class="node-type">${s.ok || 0} / ${s.tested || 0}</div></td><td data-label="P50 / P95">${ms(s.p50)} / ${ms(s.p95)}</td><td>${trend(ss)}</td><td class="status">${stateText(ss.at(-1)?.state)}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="empty">${t("暂无节点，请连接控制器或更换筛选条件。", "No nodes. Connect a controller or change the filter.")}</td></tr>`}</tbody></table></div><div class="legend"><span><i style="background:#76b396"></i>${t("成功", "Success")}</span><span><i style="background:#cd6d69"></i>${t("探测失败", "Probe failure")}</span><span><i style="background:#d6ae63"></i>${t("采集错误", "Collection error")}</span><span><i style="background:#dce3de"></i>${t("缺测 / 未测", "Gap / pending")}</span><span>${t("延迟分位数对应保留的样本窗口", "Latency percentiles cover retained samples")}</span></div></section>`;
+    return `<tr><td><input type="checkbox" data-select="${e(n)}" ${selected.has(n) ? "checked" : ""} aria-label="${e(n)}" ${active() ? "disabled" : ""}></td><td><button class="node-name" data-detail="${e(n)}">${e(n)}</button><div class="node-type">${e(proxies[n]?.type || "HTTPS")}</div></td><td><b class="${s.fail ? "bad" : "good"}">${pct(s.loss)}</b></td><td><b class="${s.recentLoss > 0 ? "bad" : "good"}">${pct(s.recentLoss)}</b><div class="node-type">${s.recentTested} ${t("有效样本", "valid samples")}</div></td><td>${s.tested} / ${s.ok} / <span class="${s.fail ? "bad" : ""}">${s.fail}</span><div class="node-type">${t("采集错误", "Errors")} ${s.error} · ${t("缺测", "Gaps")} ${s.skipped}</div></td><td>${ms(s.lastMs)} / ${ms(s.mean)}</td><td class="${s.streak ? "bad" : ""}">${s.streak}</td><td>${trend(ss)}</td><td class="status">${stateText(s.lastState)}<div class="node-type">${time(s.lastAt)}</div></td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="empty">${t("暂无节点，请连接控制器或更换筛选条件。", "No nodes. Connect a controller or change the filter.")}</td></tr>`}</tbody></table></div><div class="legend"><span><i style="background:#76b396"></i>${t("成功", "Success")}</span><span><i style="background:#cd6d69"></i>${t("探测失败", "Probe failure")}</span><span><i style="background:#d6ae63"></i>${t("采集错误", "Collection error")}</span><span><i style="background:#dce3de"></i>${t("缺测 / 未测", "Gap / pending")}</span><span>${t("近期率按最近 20 次记录计算，剔除错误和缺测；— 表示暂无有效样本", "Recent rate uses the last 20 observations, excluding errors and gaps; — means no valid samples")}</span></div></section>`;
 }
 function historyView() {
   return `<section class="panel"><div class="panel-head"><h2>${t("本机观察记录", "Local observations")}</h2><button id="import">${t("导入 JSON", "Import JSON")}</button></div><div class="list-tools"><input id="historySearch" value="${e(historySearch)}" placeholder="${t("节点 / 目标 / 日期", "Node / target / date")}"><select id="historyKind">${options([["all", t("全部任务", "All sessions")], ["quick", t("快速测试", "Quick tests")], ["continuous", t("持续监测", "Monitoring")]], historyKind)}</select></div>${records.filter((r) => (historyKind === "all" || historyKind === "quick" === !!r.quick) && [r.options.target, time(r.started), ...r.rows.map((row) => row.name)].some((v) => String(v).toLowerCase().includes(historySearch.toLowerCase()))).map((r) => `<div class="history-row"><div><b>${e(r.options.target)} · ${r.rows.length} ${t("节点", "nodes")}</b><small>${time(r.started)} · ${stateText(r.state)} · ${e(r.executor)}</small></div><button data-history="${e(r.id)}">${t("查看", "Open")}</button></div>`).join("")}${helperHistory.map((r) => `<div class="history-row"><div>${e(r.options.target)} · ${time(r.started_at)}<small>${t("助手记录", "Helper history")}</small></div><button data-helper-history="${e(r.id)}">${t("查看", "Open")}</button></div>`).join("")}${!records.length && !helperHistory.length ? `<div class="empty">${t("还没有记录。完成第一次观察后会保存在这里。", "Your observations will appear here after your first session.")}</div>` : ""}</section>`;
@@ -134,6 +133,7 @@ function connectDialog() {
     try {
       const u = new URL($("url").value);
       if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash) throw Error("Invalid controller URL");
+      Object.assign(draft, {mode:"https",interval:15,timeout:5000,workers:4});
       conn = { kind: "direct", url: u.href.replace(/\/$/, ""), secret: $("secret").value };
       await api("/version");
       const p = await api("/proxies");
@@ -211,10 +211,10 @@ async function start() {
       return toast(t("其他标签页正在测试此控制器", "Another tab is testing this controller"));
     }
   }
-  const opts = { target: $("target").value, interval: +$("interval").value, timeout: +$("timeout").value, workers: +$("workers").value, duration: tab === "quick" ? 0 : +$("duration").value, rounds: tab === "quick" ? 3 : 0 };
+  const opts = { mode: tab === "quick" || conn.kind !== "helper" ? "https" : draft.mode, target: $("target").value, interval: +$("interval").value, timeout: +$("timeout").value, workers: +$("workers").value, duration: tab === "quick" ? 0 : +$("duration").value, rounds: tab === "quick" ? 3 : 0 };
   try {
     if (conn.kind === "helper") {
-      const body = { consent: true, nodes: [...selected], source: "nodes", mode: "https", target: opts.target, timeout_ms: opts.timeout, concurrency: opts.workers, interval_seconds: opts.interval, duration_seconds: opts.duration, rounds: 3, group: "", purpose: "custom" };
+      const body = { consent: true, nodes: [...selected], source: "nodes", mode: opts.mode, target: opts.target, timeout_ms: opts.timeout, concurrency: opts.workers, interval_seconds: opts.interval, duration_seconds: opts.duration, rounds: 3, group: "", purpose: "custom" };
       await api(tab === "quick" ? "/api/stability/start" : "/api/monitor/start", { method: "POST", body });
       await pollHelper(tab === "quick");
     } else {
@@ -278,6 +278,7 @@ async function measure(r, row, control) {
         error = t("控制接口异常，任务已中断；未计为节点失败。", "Controller error interrupted this session; not counted as a node failure.");
         stop("interrupted");
       }
+      syncedAt = Date.now();
       updateResults();
     }
     if (inflight.get(row.name) === control) inflight.delete(row.name);
@@ -288,10 +289,12 @@ function updateResults() {
   resultTimer = setTimeout(() => {
     resultTimer = null;
     const focus = document.activeElement;
-    if (focus?.id === "search" || $("detail").open) return;
+    if ($("detail").open) return;
+    const searching = focus?.id === "search", caret = searching ? focus.selectionStart : null;
     const y = scrollY;
     render();
     scrollTo(0, y);
+    if (searching && $("search")) { $("search").focus({preventScroll:true}); $("search").setSelectionRange(caret, caret); }
   }, 500);
 }
 async function stop(state = "cancelled") {
@@ -336,9 +339,10 @@ async function pollHelper(quick = run?.quick || false, id) {
   const data = await api(quick ? "/api/stability" : "/api/monitor" + (id ? "?id=" + encodeURIComponent(id) : "") + (detailName ? (id ? "&" : "?") + "node=" + encodeURIComponent(detailName) : ""));
   const j = quick ? data.job : data.monitor;
   helperHistory = data.history || [];
+  syncedAt = Date.now(); pollError = "";
   if (!j) return;
   const metric = j.options.mode === "icmp" ? "icmp" : "https";
-  run = { id: j.id, executor: "helper", quick, state: j.state, started: Date.parse(j.started_at), finished: j.finished_at ? Date.parse(j.finished_at) : null, options: { target: j.options.target, interval: j.options.interval_seconds, timeout: j.options.timeout_ms }, rows: j.rows.map((row) => ({ name: row.name, summary: row[metric], samples: (row.samples || row.recent || []).map((s) => ({ ...s[metric], at: Date.parse(s.at) })).sort((a, b) => a.at - b.at) })) };
+  run = { id: j.id, executor: "helper", quick, state: j.state, started: Date.parse(j.started_at), finished: j.finished_at ? Date.parse(j.finished_at) : null, options: { mode: j.options.mode, target: j.options.target, interval: j.options.interval_seconds, timeout: j.options.timeout_ms }, rows: j.rows.map((row) => ({ name: row.name, summary: row[metric], samples: normalizeSamples(row.samples || row.recent || [], metric) })) };
   persist();
 }
 async function showDetail(name) {
@@ -405,12 +409,18 @@ function wire() {
   for (const id of ["target", "duration", "interval", "timeout", "workers"]) if ($(id)) $(id).onchange = (ev) => {
     draft[id] = id === "target" ? ev.target.value : +ev.target.value;
   };
+  if ($("mode")) $("mode").onchange = ev => {
+    draft.mode = ev.target.value;
+    Object.assign(draft, draft.mode === "icmp" ? {interval:1,timeout:1000,workers:32} : {interval:15,timeout:5000,workers:4});
+    render();
+  };
   document.querySelectorAll("[data-page]").forEach((b) => b.onclick = () => {
     page = b.dataset.page;
     render();
   });
   document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
     tab = b.dataset.tab;
+    if (tab === "quick" && draft.mode === "icmp") Object.assign(draft, {mode:"https",interval:15,timeout:5000,workers:4});
     render();
   });
   document.querySelectorAll("[data-connect]").forEach((b) => b.onclick = connectDialog);
@@ -448,6 +458,7 @@ function wire() {
     export: () => {
       if (!run) return;
       download("observation-" + run.id + ".json", JSON.stringify(run, null, 2), "application/json");
+      download("summary-" + run.id + ".csv", csv([["node","mode","valid","ok","failed","failure_pct","recent_20_failure_pct","errors","gaps","current_failure_streak"], ...run.rows.map(r => {const s=stats(r.name);return [r.name,run.options.mode || "https",s.tested,s.ok,s.fail,s.loss,s.recentLoss,s.error,s.skipped,s.streak];})]), "text/csv");
       download("samples-" + run.id + ".csv", csv([["node", "timestamp", "state", "latency_ms", "reason"], ...run.rows.flatMap((r) => r.samples.map((s) => [r.name, new Date(s.at).toISOString(), s.state, s.ms, s.reason]))]), "text/csv");
     }
   };
@@ -553,17 +564,18 @@ setInterval(async () => {
   }
 }, 1e4);
 setInterval(async () => {
-  if (document.hidden || !conn || conn.kind !== "helper" || busy) return;
+  if (document.hidden || !conn || conn.kind !== "helper" || busy || helperPolling) return;
   if (run?.executor === "helper" && run.state === "running") {
     try {
+      helperPolling = true;
       await pollHelper();
       updateResults();
     } catch (err) {
-      error = err.message;
+      pollError = err.message;
       updateResults();
-    }
+    } finally { helperPolling = false; }
   }
-}, 3e3);
+}, 1000);
 async function init() {
   try {
     records = await history();
