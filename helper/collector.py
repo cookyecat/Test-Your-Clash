@@ -8,7 +8,7 @@ import json, os, pathlib, re, secrets, signal, socket, subprocess, sys, threadin
 import urllib.parse, webbrowser, sqlite3, contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '5.0.0'
+VERSION = '5.0.1'
 PORT = int(os.environ.get('NETDASH_PORT', '17890'))
 HOME = pathlib.Path.home()
 BASE = HOME / 'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev'

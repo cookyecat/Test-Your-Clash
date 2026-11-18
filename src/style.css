@@ -694,3 +694,230 @@ footer {
     gap: 10px;
   }
 }
+.bulk-selection {
+  padding: 16px 20px;
+  background: #edf5ef;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.bulk-selection > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.bulk-selection strong {
+  font-size: 15px;
+  color: #176a50;
+}
+.bulk-selection span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.bulk-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bulk-buttons button {
+  font-size: 12px;
+}
+.bulk-selection p {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 11px;
+}
+.nodes input[type=checkbox] {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--green);
+}
+.table-wrap:has(.nodes) {
+  max-height: 65vh;
+  overflow: auto;
+}
+.nodes th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.nodes td:first-child {
+  width: 42px;
+}
+.dns-panel .panel-head h2 {
+  margin-top: 7px;
+}
+.dns-map {
+  padding: 28px;
+  background: radial-gradient(#dbe5dc 1px, transparent 1px);
+  background-size: 20px 20px;
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 35px;
+  align-items: start;
+}
+.dns-origin {
+  padding-top: 35px;
+  position: relative;
+}
+.dns-origin:after {
+  content: "";
+  position: absolute;
+  border-top: 2px dashed #a2b8a8;
+  left: 100%;
+  width: 35px;
+  top: 76px;
+}
+.dns-paths {
+  border-left: 2px dashed #a2b8a8;
+  padding-left: 24px;
+  display: grid;
+  grid-template-columns: minmax(160px, .7fr) minmax(260px, 1.6fr);
+  gap: 24px;
+}
+.dns-lane {
+  position: relative;
+  min-width: 0;
+}
+.dns-edge-label {
+  color: #567766;
+  font-size: 11px;
+  min-height: 32px;
+  margin-bottom: 8px;
+}
+.dns-node {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 17px;
+  background: #fff;
+  border: 1px solid #b9d4c2;
+  border-radius: 10px;
+  box-shadow: 0 3px 12px #193c2807;
+}
+.dns-node strong {
+  display: block;
+  font-size: 13px;
+}
+.dns-node span {
+  display: block;
+  font-size: 12px;
+  color: #496a59;
+  line-height: 1.8;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.dns-node small {
+  font-size: 10px;
+  color: #83988a;
+}
+.dns-node.unknown {
+  border-style: dashed;
+  background: #f9fbf8;
+}
+.dns-lane-note {
+  font-size: 11px;
+}
+.dns-fork-label {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #71847d;
+  padding: 15px 0;
+}
+.dns-branches {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  border-left: 2px dashed #a2b8a8;
+  padding-left: 16px;
+}
+.dns-branch {
+  position: relative;
+}
+.dns-branch:before {
+  content: "";
+  width: 16px;
+  position: absolute;
+  right: 100%;
+  top: 24px;
+  border-top: 2px dashed #a2b8a8;
+}
+.dns-connect-note {
+  padding: 15px 20px;
+  background: #f6f9f3;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #647e6e;
+}
+.dns-connect-note button {
+  margin: 8px;
+}
+.dns-map button:hover {
+  border-color: var(--green);
+}
+@media (max-width: 1100px) {
+  .dns-map {
+    grid-template-columns: 150px 1fr;
+    padding: 20px;
+    gap: 24px;
+  }
+  .dns-origin:after {
+    width: 24px;
+  }
+  .dns-paths {
+    grid-template-columns: 1fr;
+  }
+  .dns-branches {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 700px) {
+  .dns-map {
+    display: block;
+    padding: 16px;
+  }
+  .dns-origin {
+    padding: 0 0 24px;
+  }
+  .dns-origin:after {
+    left: 22px;
+    top: auto;
+    bottom: 0;
+    width: 0;
+    height: 24px;
+    border-top: 0;
+    border-left: 2px dashed #a2b8a8;
+  }
+  .dns-paths {
+    padding-left: 16px;
+    margin-left: 22px;
+    gap: 20px;
+  }
+  .dns-branches {
+    grid-template-columns: 1fr;
+  }
+  .bulk-selection {
+    padding: 14px;
+  }
+  .bulk-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+  .bulk-buttons .primary {
+    grid-column: 1/-1;
+  }
+  .table-wrap:has(.nodes) {
+    max-height: none;
+  }
+  .dns-panel .panel-head {
+    flex-wrap: wrap;
+  }
+  .dns-branches .dns-node {
+    padding: 13px;
+  }
+}

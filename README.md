@@ -43,3 +43,11 @@ The Pages workflow builds and tests the single HTML, packages the helper as a wo
 Tag a release `v5.x.x` to publish the helper installer through the release workflow. The app links to the repository's latest release. Release binaries and Pages output are generated from source and are never committed.
 
 Old `network-dashboard/v1` snapshots can be imported as read-only topology evidence. The helper's existing database remains in place. V5 browser observations use a separate IndexedDB database and can be exported as JSON/CSV.
+
+## DNS topology and bulk selection
+
+The Network map begins with a clickable DNS configuration graph: system resolvers, Clash DNS, domain policies, default/fallback upstreams, proxy/direct hostname resolvers, and bootstrap resolution. Solid facts come from the helper/snapshot; unobserved paths remain unknown. DNS upstream branches are alternatives by purpose, never displayed as sequential network hops. Importing a snapshot disconnects the live view so historical data cannot be mistaken for live controller state.
+
+For hundreds of nodes, choose a group (or All nodes) and click **Select all matches (N)**. Selection includes offscreen rows, honors both search and issue filters, and accumulates across groups with duplicate nodes removed. **Select entire scope**, **Invert matches**, and the table-header checkbox share these rules. Sessions are limited to 500 nodes; larger selections are rejected without silently truncating. Use **Select first 500** explicitly when needed. Probe concurrency stays bounded, and UI/storage updates are coalesced for large batches.
+
+Run `node tests/mock-controller.mjs --large` for a synthetic 300-node controller. `tests/fixtures/dns-snapshot.json` is a small synthetic DNS fixture for the import UI. Neither fixture contains user configuration or contacts real DNS/proxy servers.

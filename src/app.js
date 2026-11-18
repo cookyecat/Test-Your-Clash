@@ -1,8 +1,11 @@
-import { targets, escape as e, summarize, classify, leaves, nextDue, csv } from "./model.js";
+import { targets, escape as e, summarize, classify, leaves, nextDue, csv, filterNodeNames, batchSelect } from "./model.js";
+import { dnsTopology } from "./dns-view.js";
 import { history, save } from "./store.js";
 let lang = localStorage.getItem("net-lang") || (navigator.language.startsWith("zh") ? "zh" : "en");
 const t = (zh, en) => lang === "zh" ? zh : en, $ = (id) => document.getElementById(id);
 let releaseLock = null;
+let resultTimer = null, persistTimer = null;
+const pendingSaves = /* @__PURE__ */ new Map();
 let routeIndex = 0, historySearch = "", historyKind = "all";
 const draft = { target: "cloudflare", duration: 1800, interval: 15, timeout: 5e3, workers: 4 };
 const fingerprint = (p, c) => JSON.stringify({ mode: c.mode, tun: c.tun, port: c["mixed-port"], nodes: Object.entries(p).map(([n, v]) => [n, v.type, v.now, v.all]).sort() });
@@ -35,16 +38,36 @@ function options(items, value) {
   return items.map(([v, label]) => `<option value="${e(v)}" ${String(v) === String(value) ? "selected" : ""}>${e(label)}</option>`).join("");
 }
 function render() {
+  const tableScroll = document.querySelector(".table-wrap:has(.nodes)")?.scrollTop || 0;
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-  $("app").innerHTML = `<div class="shell"><aside><div class="brand">◈ ${t("网络状态台", "Observatory")}<b>NETWORK OBSERVATORY</b></div><button class="nav ${page === "topology" ? "active" : ""}" data-page="topology">⌘ ${t("网络拓扑", "Network map")}</button><button class="nav ${page === "monitor" ? "active" : ""}" data-page="monitor">▥ ${t("节点稳定性", "Node stability")}</button><div class="aside-note">${t("数据留在你的设备上", "Your data stays on your device")}<br>LOCAL FIRST · V5.0</div></aside><main><header><span>${t("本机网络 / 工作台", "LOCAL NETWORK / WORKSPACE")}</span><div><span class="badge">${conn ? e(conn.kind === "helper" ? t("本机助手", "Local helper") : t("控制器直连", "Direct controller")) : t("尚未连接", "Not connected")}</span><button id="language">${lang === "zh" ? "EN" : "中文"}</button><button id="connectButton">${conn ? t("连接管理", "Connection") : t("连接本机", "Connect")}</button></div></header><div class="page"><div class="heading"><div><div class="eyebrow">${page === "monitor" ? "OBSERVE • COMPARE • UNDERSTAND" : "FOLLOW THE CONNECTION"}</div><h1>${page === "monitor" ? t("让稳定性，看得见。", "Stability, in plain sight.") : t("每一条连接，都有来路。", "Every connection has a path.")}</h1><p>${page === "monitor" ? t("观察真实代理请求，找到失败发生的时刻。", "Observe real proxy requests. See exactly when they fail.") : t("连接记录与配置路径，分开呈现。", "Observed connections and configured routes, clearly distinguished.")}</p></div>${conn ? `<button id="refresh">↻ ${t("刷新", "Refresh")}</button>` : ""}</div>${error ? `<div class="notice" role="alert">${e(error)}</div>` : ""}${page === "monitor" ? monitor() : topology()}<footer><span>NETWORK OBSERVATORY · 5.0</span><span>${t("本地数据 · 无遥测", "Local data · No telemetry")}</span></footer></div></main></div>`;
+  $("app").innerHTML = `<div class="shell"><aside><div class="brand">◈ ${t("网络状态台", "Observatory")}<b>NETWORK OBSERVATORY</b></div><button class="nav ${page === "topology" ? "active" : ""}" data-page="topology">⌘ ${t("网络拓扑", "Network map")}</button><button class="nav ${page === "monitor" ? "active" : ""}" data-page="monitor">▥ ${t("节点稳定性", "Node stability")}</button><div class="aside-note">${t("数据留在你的设备上", "Your data stays on your device")}<br>LOCAL FIRST · V5.0.1</div></aside><main><header><span>${t("本机网络 / 工作台", "LOCAL NETWORK / WORKSPACE")}</span><div><span class="badge">${conn ? e(conn.kind === "helper" ? t("本机助手", "Local helper") : t("控制器直连", "Direct controller")) : t("尚未连接", "Not connected")}</span><button id="language">${lang === "zh" ? "EN" : "中文"}</button><button id="connectButton">${conn ? t("连接管理", "Connection") : t("连接本机", "Connect")}</button></div></header><div class="page"><div class="heading"><div><div class="eyebrow">${page === "monitor" ? "OBSERVE • COMPARE • UNDERSTAND" : "FOLLOW THE CONNECTION"}</div><h1>${page === "monitor" ? t("让稳定性，看得见。", "Stability, in plain sight.") : t("每一条连接，都有来路。", "Every connection has a path.")}</h1><p>${page === "monitor" ? t("观察真实代理请求，找到失败发生的时刻。", "Observe real proxy requests. See exactly when they fail.") : t("连接记录与配置路径，分开呈现。", "Observed connections and configured routes, clearly distinguished.")}</p></div>${conn ? `<button id="refresh">↻ ${t("刷新", "Refresh")}</button>` : ""}</div>${error ? `<div class="notice" role="alert">${e(error)}</div>` : ""}${page === "monitor" ? monitor() : topology()}<footer><span>NETWORK OBSERVATORY · 5.0.1</span><span>${t("本地数据 · 无遥测", "Local data · No telemetry")}</span></footer></div></main></div>`;
   wire();
+  const table = document.querySelector(".table-wrap:has(.nodes)");
+  if (table) table.scrollTop = tableScroll;
 }
 function monitor() {
   return `<div class="tabs">${[["continuous", t("持续监测", "Monitor")], ["quick", t("快速测试", "Quick test")], ["history", t("历史记录", "History")]].map(([id, label]) => `<button data-tab="${id}" class="${tab === id ? "active" : ""}">${label}</button>`).join("")}</div>${tab === "history" ? historyView() : !conn && !run ? `<section class="panel"><div class="empty"><div class="symbol">▥</div><h2>${t("先连接，再开始观察", "Connect to start observing")}</h2><p>${t("直接连接 Clash / Mihomo，即可测量节点的 HTTPS 稳定性。Mac 助手可让监测在关闭网页后继续。", "Connect to Clash / Mihomo to monitor HTTPS stability. The optional Mac helper keeps monitoring after you close this page.")}</p><button class="primary" data-connect>${t("连接控制器", "Connect controller")}</button><p>${t("无需上传订阅、节点配置或密钥。", "No subscriptions, node configurations or secrets are uploaded.")}</p></div></section>` : workspace()}`;
 }
+function selectableNames() {
+  return run ? run.rows.map((r) => r.name) : leaves(proxies, scope);
+}
+function filteredNames() {
+  return filterNodeNames(selectableNames(), search, filter, stats);
+}
+function changeSelection(names, mode = "add") {
+  if (active()) return;
+  try {
+    selected = batchSelect(selected, names, mode);
+    render();
+  } catch {
+    toast(t("每次最多 500 个节点；请缩小范围，或先清空选择后选取前 500 个。", "Maximum 500 nodes per session. Narrow the filter, or clear selection and choose the first 500."));
+  }
+}
 function workspace() {
-  const names = run ? run.rows.map((r) => r.name) : leaves(proxies, scope), shown = names.filter((n) => n.toLowerCase().includes(search.toLowerCase())).filter((n) => filter === "all" || stats(n).fail > 0 || stats(n).error > 0).sort((a, b) => sort === "failure" ? (stats(b).fail || 0) - (stats(a).fail || 0) || a.localeCompare(b) : a.localeCompare(b)), all = names.map(stats), tested = all.reduce((n, s) => n + s.tested, 0), failed = all.filter((s) => s.fail > 0).length;
-  return `${run ? `<div class="metrics">${[[stateText(run.state), t("任务状态", "Session status"), run.executor === "helper" ? t("助手执行 · 关闭网页后继续", "Helper · continues after closing") : t("浏览器执行 · 离开前台暂停", "Browser · pauses in background")], [Math.floor(((run.finished || Date.now()) - run.started) / 6e4) + " min", t("观察时间", "Elapsed"), time(run.started)], [tested, t("有效样本", "Valid samples"), t("仅成功和探测失败", "Success + probe failure only")], [failed + "/" + names.length, t("发生失败的节点", "Nodes with failures"), t("不包含采集错误", "Excludes collection errors")]].map(([v, l, d]) => `<div class="metric"><small>${l}</small><strong>${e(v)}</strong><p>${e(d)}</p></div>`).join("")}</div>` : ""}<section class="panel"><div class="toolbar">${!active() ? `<label class="field">${t("节点范围", "Scope")}<select id="scope">${options([["", t("全部节点", "All nodes")], ...Object.entries(proxies).filter(([, p]) => p.all).map(([n]) => [n, n])], scope)}</select></label><label class="field">${t("测试目标", "Target")}<select id="target">${options(Object.keys(targets).map((n) => [n, n]), draft.target)}</select></label><label class="field">${t("观察时长", "Duration")}<select id="duration">${options([[1800, t("30 分钟", "30 minutes")], [7200, t("2 小时", "2 hours")], [28800, t("8 小时", "8 hours")], [0, t("直到停止", "Until stopped")]], draft.duration)}</select></label>` : `<div><b>${e(run.options.target)} · ${e(run.options.interval)} s</b><p>${t("运行参数已固定", "Session settings are fixed")} · ${run.rows.length} ${t("节点", "nodes")}</p></div>`}<div class="actions">${active() ? `<button id="pause" ${run.executor === "helper" ? "hidden" : ""}>${run.state === "paused" ? t("继续", "Resume") : t("暂停", "Pause")}</button><button id="stop">■ ${t("停止", "Stop")}</button>` : `${run ? `<button id="new">${t("新建监测", "New session")}</button><button id="retry">${t("复测异常", "Retry failures")}</button>` : ""}<button class="primary" id="start" ${!conn ? "disabled" : ""}>▶ ${tab === "quick" ? t("开始 3 轮测试", "Start 3 rounds") : t("开始监测", "Start monitoring")}</button>`}<button id="export" ${!run ? "disabled" : ""}>${t("导出", "Export")}</button></div></div>${!active() ? `<details><summary>${t("高级设置", "Advanced settings")}</summary><div class="advanced"><label class="field">${t("每节点间隔", "Interval per node")}<select id="interval">${options([15, 30, 60, 300].map((n) => [n, n + " s"]), draft.interval)}</select></label><label class="field">${t("超时", "Timeout")}<select id="timeout">${options([3e3, 5e3, 8e3].map((n) => [n, n / 1e3 + " s"]), draft.timeout)}</select></label><label class="field">${t("并发", "Concurrency")}<select id="workers">${options([2, 4, 8].map((n) => [n, n]), draft.workers)}</select></label></div><p>${t("HTTPS 由指定节点访问目标；不会切换当前出口。浏览器页面暂停期间不计为失败。", "HTTPS probes use the specified node without switching your current route. Pauses are not counted as failures.")}</p></details>` : ""}<div class="list-tools"><input id="search" placeholder="${t("搜索节点…", "Search nodes…")}" value="${e(search)}" aria-label="${t("搜索节点", "Search nodes")}"><select id="resultFilter" aria-label="${t("结果筛选", "Result filter")}">${options([["all", t("全部结果", "All results")], ["issues", t("仅异常", "Issues only")]], filter)}</select><select id="sort" aria-label="${t("排序", "Sort")}">${options([["name", t("按名称", "By name")], ["failure", t("失败优先", "Failures first")]], sort)}</select><button id="selectAll">${t("选择筛选结果", "Select filtered")}</button><button id="clear">${t("清空选择", "Clear")}</button><small>${selected.size} ${t("已选", "selected")} / ${names.length}</small></div><div class="table-wrap"><table class="nodes"><thead><tr><th></th><th>${t("节点", "Node")}</th><th>${t("HTTPS 成功率", "HTTPS success")}</th><th>P50 / P95</th><th>${t("近期采样", "Recent samples")}</th><th>${t("状态", "Status")}</th></tr></thead><tbody>${shown.map((n) => {
+  const names = selectableNames(), shown = filteredNames().sort((a, b) => sort === "failure" ? (stats(b).fail || 0) - (stats(a).fail || 0) || a.localeCompare(b) : a.localeCompare(b));
+  const all = names.map(stats), tested = all.reduce((n, s) => n + s.tested, 0), failed = all.filter((s) => s.fail > 0).length;
+  const visibleSelected = shown.filter((n) => selected.has(n)).length;
+  return `${run ? `<div class="metrics">${[[stateText(run.state), t("任务状态", "Session status"), run.executor === "helper" ? t("助手执行 · 关闭网页后继续", "Helper · continues after closing") : t("浏览器执行 · 离开前台暂停", "Browser · pauses in background")], [Math.floor(((run.finished || Date.now()) - run.started) / 6e4) + " min", t("观察时间", "Elapsed"), time(run.started)], [tested, t("有效样本", "Valid samples"), t("仅成功和探测失败", "Success + probe failure only")], [failed + "/" + names.length, t("发生失败的节点", "Nodes with failures"), t("不包含采集错误", "Excludes collection errors")]].map(([v, l, d]) => `<div class="metric"><small>${l}</small><strong>${e(v)}</strong><p>${e(d)}</p></div>`).join("")}</div>` : ""}<section class="panel"><div class="toolbar">${!active() ? `<label class="field">${t("节点范围", "Scope")}<select id="scope" aria-label="${t("节点范围", "Scope")}">${options([["", t("全部节点", "All nodes")], ...Object.entries(proxies).filter(([, p]) => p.all).map(([n]) => [n, n])], scope)}</select></label><label class="field">${t("测试目标", "Target")}<select id="target">${options(Object.keys(targets).map((n) => [n, n]), draft.target)}</select></label><label class="field">${t("观察时长", "Duration")}<select id="duration">${options([[1800, t("30 分钟", "30 minutes")], [7200, t("2 小时", "2 hours")], [28800, t("8 小时", "8 hours")], [0, t("直到停止", "Until stopped")]], draft.duration)}</select></label>` : `<div><b>${e(run.options.target)} · ${e(run.options.interval)} s</b><p>${t("运行参数已固定", "Session settings are fixed")} · ${run.rows.length} ${t("节点", "nodes")}</p></div>`}<div class="actions">${active() ? `<button id="pause" ${run.executor === "helper" ? "hidden" : ""}>${run.state === "paused" ? t("继续", "Resume") : t("暂停", "Pause")}</button><button id="stop">■ ${t("停止", "Stop")}</button>` : `${run ? `<button id="new">${t("新建监测", "New session")}</button><button id="retry">${t("复测异常", "Retry failures")}</button>` : ""}<button class="primary" id="start" ${!conn || !selected.size || selected.size > 500 ? "disabled" : ""}>▶ ${tab === "quick" ? t("开始 3 轮测试", "Start 3 rounds") : t("开始监测", "Start monitoring")} · ${selected.size} ${t("个节点", "nodes")}</button>`}<button id="export" ${!run ? "disabled" : ""}>${t("导出", "Export")}</button></div></div>${!active() ? `<details><summary>${t("高级设置", "Advanced settings")}</summary><div class="advanced"><label class="field">${t("每节点间隔", "Interval per node")}<select id="interval">${options([15, 30, 60, 300].map((n) => [n, n + " s"]), draft.interval)}</select></label><label class="field">${t("超时", "Timeout")}<select id="timeout">${options([3e3, 5e3, 8e3].map((n) => [n, n / 1e3 + " s"]), draft.timeout)}</select></label><label class="field">${t("并发", "Concurrency")}<select id="workers">${options([2, 4, 8].map((n) => [n, n]), draft.workers)}</select></label></div><p>${t("HTTPS 由指定节点访问目标；不会切换当前出口。浏览器页面暂停期间不计为失败。", "HTTPS probes use the specified node without switching your current route. Pauses are not counted as failures.")}</p></details>` : ""}<div class="list-tools"><input id="search" placeholder="${t("搜索节点…", "Search nodes…")}" value="${e(search)}" aria-label="${t("搜索节点", "Search nodes")}"><select id="resultFilter" aria-label="${t("结果筛选", "Result filter")}">${options([["all", t("全部结果", "All results")], ["issues", t("仅异常", "Issues only")]], filter)}</select><select id="sort" aria-label="${t("排序", "Sort")}">${options([["name", t("按名称", "By name")], ["failure", t("失败优先", "Failures first")]], sort)}</select></div><div class="bulk-selection"><div><strong>${t("已选", "Selected")} ${selected.size} / 500</strong><span>${t("当前筛选", "Matching")} ${shown.length} · ${t("筛选外已选", "Selected outside filter")} ${selected.size - visibleSelected}</span></div><div class="bulk-buttons"><button class="primary" id="selectAll" ${active() ? "disabled" : ""}>${t("全选筛选结果", "Select all matches")} (${shown.length})</button>${shown.length > 500 ? `<button id="selectFirst" ${active() ? "disabled" : ""}>${t("选取前 500 个", "Select first 500")}</button>` : ""}<button id="selectScope" ${active() ? "disabled" : ""}>${t("全选当前范围", "Select entire scope")} (${names.length})</button><button id="invert" ${active() ? "disabled" : ""}>${t("反选筛选结果", "Invert matches")}</button><button id="clear" ${active() ? "disabled" : ""}>${t("清空全部", "Clear all")}</button></div><p>${active() ? t("运行中不能更改节点；停止后可重新选择。", "Selection is locked while running. Stop to change nodes.") : t("先选策略组或搜索，再点全选。切换策略组会保留已选节点，可累加多个组；不受滚动位置限制。", "Choose a group or search, then select all. Selections accumulate across groups and include off-screen rows.")}</p>${selected.size > 20 ? `<p>${t("大批量探测使用有界并发；超时较多时实际采样间隔会延长，缺测不计为失败。", "Large batches use bounded concurrency. Timeouts can lengthen actual sampling intervals; gaps are not failures.")}</p>` : ""}</div><div class="table-wrap"><table class="nodes"><thead><tr><th><input id="selectMatches" type="checkbox" aria-label="${t("全选或取消当前筛选", "Select or deselect matching nodes")}" ${shown.length && visibleSelected === shown.length ? "checked" : ""} ${active() || !shown.length ? "disabled" : ""}></th><th>${t("节点", "Node")}</th><th>${t("HTTPS 成功率", "HTTPS success")}</th><th>P50 / P95</th><th>${t("近期采样", "Recent samples")}</th><th>${t("状态", "Status")}</th></tr></thead><tbody>${shown.map((n) => {
     const s = stats(n), ss = samples(n);
     return `<tr><td><input type="checkbox" data-select="${e(n)}" ${selected.has(n) ? "checked" : ""} aria-label="${e(n)}" ${active() ? "disabled" : ""}></td><td><button class="node-name" data-detail="${e(n)}">${e(n)}</button><div class="node-type">${e(proxies[n]?.type || "HTTPS")}</div></td><td data-label="${t("成功率", "Success")}"><b class="${s.fail ? "bad" : "good"}">${s.rate === null ? "—" : s.rate.toFixed(1) + "%"}</b><div class="node-type">${s.ok || 0} / ${s.tested || 0}</div></td><td data-label="P50 / P95">${ms(s.p50)} / ${ms(s.p95)}</td><td>${trend(ss)}</td><td class="status">${stateText(ss.at(-1)?.state)}</td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">${t("暂无节点，请连接控制器或更换筛选条件。", "No nodes. Connect a controller or change the filter.")}</td></tr>`}</tbody></table></div><div class="legend"><span><i style="background:#76b396"></i>${t("成功", "Success")}</span><span><i style="background:#cd6d69"></i>${t("探测失败", "Probe failure")}</span><span><i style="background:#d6ae63"></i>${t("采集错误", "Collection error")}</span><span><i style="background:#dce3de"></i>${t("缺测 / 未测", "Gap / pending")}</span><span>${t("延迟分位数对应保留的样本窗口", "Latency percentiles cover retained samples")}</span></div></section>`;
@@ -53,14 +76,9 @@ function historyView() {
   return `<section class="panel"><div class="panel-head"><h2>${t("本机观察记录", "Local observations")}</h2><button id="import">${t("导入 JSON", "Import JSON")}</button></div><div class="list-tools"><input id="historySearch" value="${e(historySearch)}" placeholder="${t("节点 / 目标 / 日期", "Node / target / date")}"><select id="historyKind">${options([["all", t("全部任务", "All sessions")], ["quick", t("快速测试", "Quick tests")], ["continuous", t("持续监测", "Monitoring")]], historyKind)}</select></div>${records.filter((r) => (historyKind === "all" || historyKind === "quick" === !!r.quick) && [r.options.target, time(r.started), ...r.rows.map((row) => row.name)].some((v) => String(v).toLowerCase().includes(historySearch.toLowerCase()))).map((r) => `<div class="history-row"><div><b>${e(r.options.target)} · ${r.rows.length} ${t("节点", "nodes")}</b><small>${time(r.started)} · ${stateText(r.state)} · ${e(r.executor)}</small></div><button data-history="${e(r.id)}">${t("查看", "Open")}</button></div>`).join("")}${helperHistory.map((r) => `<div class="history-row"><div>${e(r.options.target)} · ${time(r.started_at)}<small>${t("助手记录", "Helper history")}</small></div><button data-helper-history="${e(r.id)}">${t("查看", "Open")}</button></div>`).join("")}${!records.length && !helperHistory.length ? `<div class="empty">${t("还没有记录。完成第一次观察后会保存在这里。", "Your observations will appear here after your first session.")}</div>` : ""}</section>`;
 }
 function topology() {
-  if (!conn && !snapshot) return `<div class="panel empty"><h2>${t("连接你的网络", "Connect your network")}</h2><p>${t("读取真实连接链、策略组和运行配置。", "Read actual connection chains, groups and runtime configuration.")}</p><button class="primary" data-connect>${t("连接本机", "Connect")}</button></div>`;
+  if (!conn && !snapshot) return `${dnsTopology(snapshot, config, t)}<div class="panel empty"><h2>${t("连接你的网络", "Connect your network")}</h2><p>${t("读取真实连接链、策略组和运行配置。", "Read actual connection chains, groups and runtime configuration.")}</p><button class="primary" data-connect>${t("连接本机", "Connect")}</button></div>`;
   const groups = Object.entries(proxies).filter(([, p]) => p.all), c = connections[routeIndex] || connections[0], chain = c?.chains ? [...c.chains].reverse() : c?.chain || [];
-  return `<section class="panel"><div class="panel-head"><h2>${t("业务流量路径", "Traffic path")}</h2><select id="routeConnection" aria-label="${t("选择连接", "Choose connection")}">${options(connections.map((c2, i) => [i, c2.metadata?.host || c2.host || c2.metadata?.destinationIP || c2.ip || String(i)]), routeIndex)}</select><span class="badge">${c ? t("实际连接 · 最近一条", "Observed · latest connection") : t("暂无活动连接", "No active connection")}</span></div><div class="route-board">${[[t("来源", "Source"), c?.metadata?.process || c?.process || t("本机", "This device")], [t("处理", "Processing"), "Clash · " + (config.mode || "—")], ...chain.map((n) => [t("连接链", "Chain"), n]), [t("目标", "Destination"), c?.metadata?.host || c?.metadata?.destinationIP || c?.host || c?.ip || "—"]].map(([l, v], i) => `${i ? '<span class="arrow">→</span>' : ""}<button class="route-node" data-route-detail="${e(l + ": " + v)}"><small>${l}</small><strong>${e(v)}</strong></button>`).join("")}</div><div class="legend">${t("连线来自控制器连接记录，不代表物理路由器逐跳探测。", "Edges come from controller connection records, not physical router traceroutes.")}</div></section><div class="two-cols"><section class="panel"><div class="panel-head"><h2>${t("DNS 路径", "DNS path")}</h2><span class="badge">${t("配置证据", "Configuration evidence")}</span></div><div class="panel-body">${snapshot ? `<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${e(t("系统解析器", "System resolvers"))}
-${e(JSON.stringify(snapshot.system?.resolvers || [], null, 2))}
-↓
-Clash DNS · ${e(snapshot.dns?.mode || "—")}
-↓
-${e((snapshot.dns?.upstreams || []).join(" → ") || t("上游未知", "Upstream unknown"))}</pre>` : `<p>${t("控制器接口未提供完整系统 DNS 路径。连接 Mac 助手可补充系统解析器与上游配置。", "The controller does not expose the full system DNS path. Connect the Mac helper to inspect system resolvers and upstream configuration.")}</p>`}<p>${t("配置不能证明每次查询实际命中的上游。", "Configuration alone does not establish the upstream used by each query.")}</p></div></section><section class="panel"><div class="panel-head"><h2>${t("策略组", "Proxy groups")}</h2><span class="badge">${groups.length}</span></div><div class="panel-body"><dl class="kv">${groups.map(([n, p]) => `<dt>${e(n)}</dt><dd>${e(p.now || "—")}</dd>`).join("")}</dl></div></section></div><section class="panel"><div class="panel-head"><h2>${t("活动连接", "Active connections")}</h2><span class="badge">${connections.length}</span></div><div class="table-wrap"><table><thead><tr><th>${t("目标", "Destination")}</th><th>${t("命中规则", "Matched rule")}</th><th>${t("实际链路", "Observed chain")}</th><th>↑ / ↓</th></tr></thead><tbody>${connections.slice(0, 200).map((c2) => `<tr><td>${e(c2.metadata?.host || c2.metadata?.destinationIP || c2.host)}</td><td>${e(c2.rule || "—")}</td><td>${e((c2.chains ? [...c2.chains].reverse() : c2.chain || []).join(" → "))}</td><td>${Math.round((c2.upload || 0) / 1024)} / ${Math.round((c2.download || 0) / 1024)} KB</td></tr>`).join("")}</tbody></table></div></section>`;
+  return `${dnsTopology(snapshot, config, t)}<section class="panel"><div class="panel-head"><h2>${t("业务流量路径", "Traffic path")}</h2><select id="routeConnection" aria-label="${t("选择连接", "Choose connection")}">${options(connections.map((c2, i) => [i, c2.metadata?.host || c2.host || c2.metadata?.destinationIP || c2.ip || String(i)]), routeIndex)}</select><span class="badge">${c ? t("实际连接 · 最近一条", "Observed · latest connection") : t("暂无活动连接", "No active connection")}</span></div><div class="route-board">${[[t("来源", "Source"), c?.metadata?.process || c?.process || t("本机", "This device")], [t("处理", "Processing"), "Clash · " + (config.mode || "—")], ...chain.map((n) => [t("连接链", "Chain"), n]), [t("目标", "Destination"), c?.metadata?.host || c?.metadata?.destinationIP || c?.host || c?.ip || "—"]].map(([l, v], i) => `${i ? '<span class="arrow">→</span>' : ""}<button class="route-node" data-route-detail="${e(l + ": " + v)}"><small>${l}</small><strong>${e(v)}</strong></button>`).join("")}</div><div class="legend">${t("连线来自控制器连接记录，不代表物理路由器逐跳探测。", "Edges come from controller connection records, not physical router traceroutes.")}</div></section><section class="panel"><div class="panel-head"><h2>${t("策略组", "Proxy groups")}</h2><span class="badge">${groups.length}</span></div><div class="panel-body"><dl class="kv">${groups.map(([n, p]) => `<dt>${e(n)}</dt><dd>${e(p.now || "—")}</dd>`).join("")}</dl></div></section><section class="panel"><div class="panel-head"><h2>${t("活动连接", "Active connections")}</h2><span class="badge">${connections.length}</span></div><div class="table-wrap"><table><thead><tr><th>${t("目标", "Destination")}</th><th>${t("命中规则", "Matched rule")}</th><th>${t("实际链路", "Observed chain")}</th><th>↑ / ↓</th></tr></thead><tbody>${connections.slice(0, 200).map((c2) => `<tr><td>${e(c2.metadata?.host || c2.metadata?.destinationIP || c2.host)}</td><td>${e(c2.rule || "—")}</td><td>${e((c2.chains ? [...c2.chains].reverse() : c2.chain || []).join(" → "))}</td><td>${Math.round((c2.upload || 0) / 1024)} / ${Math.round((c2.download || 0) / 1024)} KB</td></tr>`).join("")}</tbody></table></div></section>`;
 }
 async function request(path, { method = "GET", body, signal, timeout = 1e4 } = {}) {
   const c = conn;
@@ -161,11 +179,20 @@ async function pair() {
   }
   $("connectionError").textContent = t("连接超时，请检查助手和浏览器权限。", "Connection timed out. Check the helper and browser permissions.");
 }
-function persist() {
-  if (!run) return;
-  save(run).then(() => history()).then((h) => records = h).catch(() => {
-    error = t("无法保存历史，请导出当前结果。", "History storage unavailable. Export the current results.");
-  });
+function persist(flush = false) {
+  if (run) pendingSaves.set(run.id, run);
+  if (persistTimer && !flush) return;
+  clearTimeout(persistTimer);
+  const commit = () => {
+    persistTimer = null;
+    const jobs = [...pendingSaves.values()];
+    pendingSaves.clear();
+    Promise.all(jobs.map(save)).then(() => history()).then((h) => records = h).catch(() => {
+      error = t("无法保存历史，请导出当前结果。", "History storage unavailable. Export the current results.");
+    });
+  };
+  if (flush) commit();
+  else persistTimer = setTimeout(commit, 500);
 }
 async function start() {
   if (busy || active()) return;
@@ -187,7 +214,7 @@ async function start() {
   const opts = { target: $("target").value, interval: +$("interval").value, timeout: +$("timeout").value, workers: +$("workers").value, duration: tab === "quick" ? 0 : +$("duration").value, rounds: tab === "quick" ? 3 : 0 };
   try {
     if (conn.kind === "helper") {
-      const body = { nodes: [...selected], source: "nodes", mode: "https", target: opts.target, timeout_ms: opts.timeout, concurrency: opts.workers, interval_seconds: opts.interval, duration_seconds: opts.duration, rounds: 3, group: scope, purpose: "custom" };
+      const body = { nodes: [...selected], source: "nodes", mode: "https", target: opts.target, timeout_ms: opts.timeout, concurrency: opts.workers, interval_seconds: opts.interval, duration_seconds: opts.duration, rounds: 3, group: "", purpose: "custom" };
       await api(tab === "quick" ? "/api/stability/start" : "/api/monitor/start", { method: "POST", body });
       await pollHelper(tab === "quick");
     } else {
@@ -257,11 +284,15 @@ async function measure(r, row, control) {
   }
 }
 function updateResults() {
-  const focus = document.activeElement;
-  if (focus?.id === "search" || $("detail").open) return;
-  const y = scrollY;
-  render();
-  scrollTo(0, y);
+  if (resultTimer) return;
+  resultTimer = setTimeout(() => {
+    resultTimer = null;
+    const focus = document.activeElement;
+    if (focus?.id === "search" || $("detail").open) return;
+    const y = scrollY;
+    render();
+    scrollTo(0, y);
+  }, 500);
 }
 async function stop(state = "cancelled") {
   clearTimeout(timer);
@@ -279,7 +310,7 @@ async function stop(state = "cancelled") {
   if (run) {
     run.state = state;
     run.finished = Date.now();
-    persist();
+    persist(true);
   }
   render();
 }
@@ -340,6 +371,17 @@ function download(name, data, type) {
   setTimeout(() => URL.revokeObjectURL(u), 2e3);
 }
 function wire() {
+  if ($("selectMatches")) {
+    const names = filteredNames(), count = names.filter((n) => selected.has(n)).length;
+    $("selectMatches").indeterminate = count > 0 && count < names.length;
+    $("selectMatches").onchange = (ev) => changeSelection(names, ev.target.checked ? "add" : "remove");
+  }
+  document.querySelectorAll("[data-dns-detail]").forEach((b) => b.onclick = () => {
+    const d = JSON.parse(b.dataset.dnsDetail);
+    $("detail").innerHTML = `<button class="close" aria-label="${t("关闭", "Close")}">✕</button><div class="eyebrow">DNS EVIDENCE</div><h2>${e(d.title)}</h2><pre>${e(d.detail)}</pre><p>${t("配置证据，不代表某次请求的抓包结果。", "Configuration evidence, not a packet trace of an individual request.")}</p>`;
+    $("detail").querySelector("button").onclick = () => $("detail").close();
+    $("detail").showModal();
+  });
   if ($("routeConnection")) $("routeConnection").onchange = (ev) => {
     routeIndex = +ev.target.value;
     render();
@@ -379,28 +421,36 @@ function wire() {
     render();
   };
   if ($("refresh")) $("refresh").onclick = refresh;
-  const actions = { start, stop: () => stop(), pause, new: () => {
-    if (active()) return;
-    run = null;
-    selected.clear();
-    render();
-  }, retry: () => {
-    selected = new Set(run.rows.filter((r) => stats(r.name).fail > 0 || stats(r.name).error > 0).map((r) => r.name));
-    run = null;
-    render();
-  }, selectAll: () => {
-    if (active()) return;
-    selected = new Set((run ? run.rows.map((r) => r.name) : leaves(proxies, scope)).filter((n) => n.toLowerCase().includes(search.toLowerCase())));
-    render();
-  }, clear: () => {
-    if (active()) return;
-    selected.clear();
-    render();
-  }, export: () => {
-    if (!run) return;
-    download("observation-" + run.id + ".json", JSON.stringify(run, null, 2), "application/json");
-    download("samples-" + run.id + ".csv", csv([["node", "timestamp", "state", "latency_ms", "reason"], ...run.rows.flatMap((r) => r.samples.map((s) => [r.name, new Date(s.at).toISOString(), s.state, s.ms, s.reason]))]), "text/csv");
-  } };
+  const actions = {
+    start,
+    stop: () => stop(),
+    pause,
+    new: () => {
+      if (active()) return;
+      run = null;
+      selected.clear();
+      render();
+    },
+    retry: () => {
+      selected = new Set(run.rows.filter((r) => stats(r.name).fail > 0 || stats(r.name).error > 0).map((r) => r.name));
+      run = null;
+      render();
+    },
+    selectAll: () => changeSelection(filteredNames()),
+    selectScope: () => changeSelection(selectableNames()),
+    selectFirst: () => changeSelection(filteredNames().slice(0, 500)),
+    invert: () => changeSelection(filteredNames(), "invert"),
+    clear: () => {
+      if (active()) return;
+      selected.clear();
+      render();
+    },
+    export: () => {
+      if (!run) return;
+      download("observation-" + run.id + ".json", JSON.stringify(run, null, 2), "application/json");
+      download("samples-" + run.id + ".csv", csv([["node", "timestamp", "state", "latency_ms", "reason"], ...run.rows.flatMap((r) => r.samples.map((s) => [r.name, new Date(s.at).toISOString(), s.state, s.ms, s.reason]))]), "text/csv");
+    }
+  };
   for (const [id, fn] of Object.entries(actions)) if ($(id)) $(id).onclick = fn;
   if ($("search")) $("search").oninput = (ev) => {
     search = ev.target.value;
@@ -420,12 +470,10 @@ function wire() {
   if ($("scope")) $("scope").onchange = (ev) => {
     scope = ev.target.value;
     run = null;
-    selected.clear();
     render();
   };
   document.querySelectorAll("[data-select]").forEach((b) => b.onchange = () => {
-    b.checked ? selected.add(b.dataset.select) : selected.delete(b.dataset.select);
-    render();
+    changeSelection([b.dataset.select], b.checked ? "add" : "remove");
   });
   document.querySelectorAll("[data-detail]").forEach((b) => b.onclick = () => showDetail(b.dataset.detail));
   document.querySelectorAll("[data-history]").forEach((b) => b.onclick = () => {
@@ -441,6 +489,7 @@ function wire() {
     render();
   });
   if ($("import")) $("import").onclick = () => {
+    if (active()) return toast(t("请先停止当前任务再导入快照", "Stop the active session before importing a snapshot"));
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json";
@@ -450,6 +499,10 @@ function wire() {
         if (f.size > 8e6) throw Error("Maximum 8 MB");
         const d = JSON.parse(await f.text());
         if (d.schema === "network-dashboard/v1" && d.system && d.clash) {
+          conn = null;
+          run = null;
+          selected.clear();
+          sessionStorage.removeItem("net-connection");
           snapshot = d;
           config = d.clash;
           connections = d.connections || [];
@@ -480,7 +533,7 @@ window.addEventListener("pagehide", () => {
   if (run?.executor === "browser" && active()) {
     run.state = "interrupted";
     run.finished = Date.now();
-    persist();
+    persist(true);
   }
 });
 setInterval(async () => {

@@ -1,0 +1,15 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {batchSelect,filterNodeNames,leaves} from '../src/model.js';
+import {dnsEvidence,dnsTopology} from '../src/dns-view.js';
+const names=Array.from({length:600},(_,i)=>`Node ${i}`),t=(zh,en)=>en;
+test('300 nodes are selected, including offscreen rows',()=>assert.equal(batchSelect(new Set(),names.slice(0,300)).size,300));
+test('group additions preserve prior choices and deduplicate overlap',()=>{const first=batchSelect(new Set(),names.slice(0,200));const second=batchSelect(first,names.slice(100,300));assert.equal(second.size,300);assert.equal(first.size,200)});
+test('over-limit bulk selection rejects atomically',()=>{const selected=new Set(['existing']);assert.throws(()=>batchSelect(selected,names),RangeError);assert.deepEqual([...selected],['existing'])});
+test('bulk and row filters both honor issues and search',()=>{const shown=filterNodeNames(['Japan 1','Japan 2','US 1'],'Japan','issues',n=>({fail:n==='Japan 2'?1:0,error:0}));assert.deepEqual([...batchSelect(new Set(),shown)],['Japan 2'])});
+test('invert preserves hidden selection; deselect removes matches only',()=>{assert.deepEqual([...batchSelect(new Set(['hidden','a']),['a','b'],'invert')],['hidden','b']);assert.deepEqual([...batchSelect(new Set(['hidden','a']),['a'],'remove')],['hidden'])});
+test('nested group selection handles 300 members without duplicates',()=>{const proxies=Object.fromEntries(names.slice(0,300).map(n=>[n,{type:'Shadowsocks'}]));proxies.group={all:names.slice(0,300)};proxies.outer={all:['group',names[0]]};assert.equal(leaves(proxies,'outer').length,300)});
+test('DNS topology includes all six resolver roles and system evidence',()=>{const data=JSON.parse(readFileSync('tests/fixtures/dns-snapshot.json','utf8'));const graph=dnsEvidence(data);assert.equal(graph.branches.length,6);assert.deepEqual(graph.hijack,['any:53']);const html=dnsTopology(data,{},t);for(const key of ['System DNS','Clash DNS','Default upstreams','Fallback upstreams','Proxy hostname resolution','Direct hostname resolution','Upstream bootstrap resolution','Domain-specific resolvers'])assert.ok(html.includes(key),key);assert.ok(!html.includes('<pre'));});
+test('no snapshot retains unknown graph without inventing upstreams',()=>{const html=dnsTopology(null,{},t);assert.ok(html.includes('Configuration unavailable'));assert.ok(html.includes('Unknown'));assert.ok(!html.includes('1.1.1.1'))});
+test('DNS endpoint labels are escaped and disabled DNS stays explicit',()=>{const html=dnsTopology({dns:{enabled:false,upstreams:['<img src=x onerror=alert(1)>']}},{},t);assert.ok(html.includes('&lt;img'));assert.ok(!html.includes('<img'));assert.ok(html.includes('DNS disabled'))});

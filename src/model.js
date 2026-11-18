@@ -37,3 +37,15 @@ export function nextDue(due, now, interval) {
 export function csv(rows) {
   return "\uFEFF" + rows.map((r) => r.map((v) => '"' + String(v ?? "").replace(/^[=+@-]/, "'$&").replaceAll('"', '""') + '"').join(",")).join("\r\n");
 }
+export function filterNodeNames(names, search, filter, getStats) {
+  return names.filter((name) => name.toLowerCase().includes(search.toLowerCase())).filter((name) => filter === "all" || getStats(name).fail > 0 || getStats(name).error > 0);
+}
+export function batchSelect(current, candidates, mode = "add", limit = 500) {
+  const next = new Set(current);
+  for (const name of new Set(candidates)) {
+    if (mode === "remove" || mode === "invert" && next.has(name)) next.delete(name);
+    else next.add(name);
+  }
+  if (next.size > limit) throw new RangeError("selection_limit");
+  return next;
+}

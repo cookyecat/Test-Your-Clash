@@ -1,4 +1,8 @@
 import http from "node:http";
+const large=process.argv.includes('--large');
+const names=Array.from({length:300},(_,i)=>`${i<100?'Japan':i<200?'Singapore':'Germany'} ${String(i+1).padStart(3,'0')}`);
+const largeProxies=Object.fromEntries(names.map(name=>[name,{type:'Shadowsocks'}]));
+for(const [index,group] of ['Japan','Singapore','Germany'].entries())largeProxies[group]={type:'Selector',all:names.slice(index*100,(index+1)*100),now:names[index*100]};
 http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "http://127.0.0.1:4173");
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
@@ -22,5 +26,6 @@ http.createServer((req, res) => {
     res.statusCode = 404;
     data = { message: "Not found" };
   }
+  if(large && url.pathname==="/proxies")data={proxies:largeProxies};
   res.end(JSON.stringify(data));
 }).listen(19090, "127.0.0.1", () => console.log("Fixture: http://127.0.0.1:19090"));
