@@ -77,3 +77,16 @@ export function probeStats(row) {
     lastMs:total ? total.last_ms : last?.state==='ok' ? last.ms:null,
     mean:total?.avg_ms ?? (lat.length ? lat.reduce((a,b)=>a+b,0)/lat.length:null)};
 }
+
+export function compareNodes(a, b, key, direction, getStats) {
+  if (key === 'name') return direction * a.localeCompare(b);
+  const value = name => {
+    const s = getStats(name);
+    if (key === 'status') return ({fail:4,error:3,skipped:2,ok:1})[s.lastState] ?? null;
+    return s[key];
+  };
+  const av=value(a), bv=value(b);
+  const missing=v=>typeof v!=='number'||!Number.isFinite(v);
+  if (missing(av) || missing(bv)) return missing(av)===missing(bv) ? a.localeCompare(b) : missing(av)?1:-1;
+  return direction * (av-bv) || a.localeCompare(b);
+}

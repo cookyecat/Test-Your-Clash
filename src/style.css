@@ -944,3 +944,7 @@ body:has(.monitor-panel) .heading .eyebrow {display:none}
 .monitor-panel .toolbar {padding:12px 18px;align-items:center}
 .monitor-panel:has(.running-selection) .probe-consent {display:none}
 .monitor-panel .live-status {padding:10px 18px;border-bottom:1px solid var(--line)}
+.monitor-panel .sort-heading {border:0;background:transparent;padding:4px 0;color:inherit;font:inherit;text-transform:inherit;cursor:pointer;white-space:nowrap}
+.monitor-panel .sort-heading:hover,.monitor-panel th[aria-sort=ascending],.monitor-panel th[aria-sort=descending] {color:var(--green)}
+.monitor-panel .sort-heading:focus-visible {outline:2px solid var(--green);outline-offset:3px}
+.monitor-panel .sort-heading span {font-size:12px}
