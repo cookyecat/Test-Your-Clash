@@ -1,4 +1,31 @@
 let db;
-export async function database(){if(db)return db;db=await new Promise((resolve,reject)=>{const r=indexedDB.open('network-observatory-v5',1);r.onupgradeneeded=()=>r.result.createObjectStore('runs',{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});return db;}
-export async function history(){const d=await database();return new Promise((resolve,reject)=>{const r=d.transaction('runs').objectStore('runs').getAll();r.onsuccess=()=>resolve(r.result.sort((a,b)=>b.started-a.started));r.onerror=()=>reject(r.error)})}
-export async function save(run){const d=await database(),all=await history();return new Promise((resolve,reject)=>{const tx=d.transaction('runs','readwrite'),s=tx.objectStore('runs');s.put(structuredClone(run));all.forEach((r,i)=>{if(i>=119||r.started<Date.now()-30*864e5)s.delete(r.id)});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)})}
+export async function database() {
+  if (db) return db;
+  db = await new Promise((resolve, reject) => {
+    const r = indexedDB.open("network-observatory-v5", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("runs", { keyPath: "id" });
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+  return db;
+}
+export async function history() {
+  const d = await database();
+  return new Promise((resolve, reject) => {
+    const r = d.transaction("runs").objectStore("runs").getAll();
+    r.onsuccess = () => resolve(r.result.sort((a, b) => b.started - a.started));
+    r.onerror = () => reject(r.error);
+  });
+}
+export async function save(run) {
+  const d = await database(), all = await history();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction("runs", "readwrite"), s = tx.objectStore("runs");
+    s.put(structuredClone(run));
+    all.forEach((r, i) => {
+      if (i >= 119 || r.started < Date.now() - 30 * 864e5) s.delete(r.id);
+    });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
