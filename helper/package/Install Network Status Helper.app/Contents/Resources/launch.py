@@ -6,7 +6,7 @@ RESOURCE = pathlib.Path(__file__).resolve().parent
 STATE = pathlib.Path.home()/'Library/Application Support/Network Status Helper/session.json'
 ORIGIN='http://127.0.0.1:17890'
 
-VERSION="4.3.0"
+VERSION=(RESOURCE/'VERSION').read_text().strip()
 
 def http(path, body=None, admin=None, token=None, timeout=2):
     headers={'Content-Type':'application/json'} if body is not None else {}
@@ -38,7 +38,9 @@ def validate(raw):
 def ensure():
     try:health=http('/health')
     except Exception:health=None
-    if health and health.get('service')=='network-status-helper':
+    if health is not None and (not isinstance(health,dict) or health.get('service')!='network-status-helper'):
+        raise RuntimeError('17890 端口返回了其他服务的响应。')
+    if health:
         state=json.loads(STATE.read_text())
         if health.get('version')==VERSION:return state
         # Native reinstall upgrades only this helper. Never restart Clash or system networking.
@@ -72,9 +74,9 @@ def ensure():
     for _ in range(30):
         time.sleep(.2)
         try:
-            if http('/health').get('version')==VERSION:return json.loads(STATE.read_text())
+            if (health:=http('/health')).get('service')=='network-status-helper' and health.get('version')==VERSION:return json.loads(STATE.read_text())
         except Exception:pass
-    raise RuntimeError('无法启动只读助手。请确认 Python 3.9+ 与本机 17890 端口未被其他程序占用。')
+    raise RuntimeError('助手未通过启动检查。请查看本机助手目录中的 helper.log。')
 
 def main():
     if sys.version_info<(3,9):raise RuntimeError('需要 Python 3.9 或更新版本')

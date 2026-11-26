@@ -16,11 +16,12 @@ def build(destination):
         subprocess.run(['/usr/bin/osacompile','-o',str(staged),str(BASE/'helper.applescript')],check=True,capture_output=True)
         infofile=staged/'Contents/Info.plist'
         with infofile.open('rb') as f:info=plistlib.load(f)
-        info.update(CFBundleIdentifier='local.networkstatus.helper',CFBundleName='Network Status Helper',CFBundleDisplayName='网络状态台助手',CFBundleShortVersionString='4.3.0',CFBundleVersion='430',LSUIElement=True,
+        version=(BASE/'VERSION').read_text().strip()
+        info.update(CFBundleIdentifier='local.networkstatus.helper',CFBundleName='Network Status Helper',CFBundleDisplayName='网络状态台助手',CFBundleShortVersionString=version,CFBundleVersion=version,LSUIElement=True,
             CFBundleURLTypes=[{'CFBundleURLName':'Network Status Local Pairing','CFBundleURLSchemes':['netstatus'],'CFBundleTypeRole':'Viewer'}])
         with infofile.open('wb') as f:plistlib.dump(info,f)
         resources=staged/'Contents/Resources'
-        for name in ('launch.py','collector.py','index.html'):
+        for name in ('launch.py','collector.py','index.html','VERSION'):
             shutil.copy2(BASE/name,resources/name)
         # Local ad-hoc signing, not Developer ID signing or notarization.
         subprocess.run(['/usr/bin/codesign','--force','--deep','--sign','-',str(staged)],capture_output=True,check=True)
